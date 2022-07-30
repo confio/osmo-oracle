@@ -1,3 +1,8 @@
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use cosmwasm_std::{to_binary, StdResult, WasmMsg};
+
 use crate::ibc_msg::GetPriceResponse;
 
 // This is just a helper to properly serialize the above message
@@ -7,11 +12,11 @@ enum GotPriceCallbackMsg {
     GotPrice(GetPriceResponse),
 }
 
-pub fn build_callback(response: GetPriceResponse, addr: Addr) -> StdResult<WasmMsg> {
+pub fn build_callback(response: GetPriceResponse, contract_addr: String) -> StdResult<WasmMsg> {
     let msg = GotPriceCallbackMsg::GotPrice(response);
-    let bin = to_binary(&msg)?;
+    let msg = to_binary(&msg)?;
     Ok(WasmMsg::Execute {
-        contract_addr: contract_addr.into(),
+        contract_addr,
         msg,
         funds: vec![],
     })

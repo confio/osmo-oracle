@@ -1,16 +1,20 @@
-use cosmwasm_std::{from_slice, to_binary, Binary, Coin, CosmosMsg};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+use cosmwasm_std::{from_slice, to_binary, Binary, Decimal};
 
 /// This is the message we send over the IBC channel
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PacketMsg {
     GetPrice {
+        // token to sell
         input: String,
+        // token to receive
         output: String,
-        with_swap_fee: bool,
+        // the requester on controller side, for handling acks
+        requester: String,
     },
 }
 
@@ -18,6 +22,7 @@ pub enum PacketMsg {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct GetPriceResponse {
     pub spot_price: Decimal,
+    pub spot_price_with_fee: Decimal,
 }
 
 /// This is a generic ICS acknowledgement format.
