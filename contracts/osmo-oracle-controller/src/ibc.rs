@@ -121,8 +121,8 @@ fn acknowledge_get_price(
 ) -> Result<IbcBasicResponse, ContractError> {
     // store the price locally
     let data = LastPriceResponse {
-        spot_price: response.spot_price.clone(),
-        spot_price_with_fee: response.spot_price_with_fee.clone(),
+        spot_price: response.spot_price,
+        spot_price_with_fee: response.spot_price_with_fee,
         updated: env.block.time,
     };
     LAST_PRICE.save(deps.storage, (&input, &output), &data)?;
