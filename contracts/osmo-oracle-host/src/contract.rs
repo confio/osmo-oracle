@@ -1,8 +1,8 @@
 use cosmwasm_std::{
-    entry_point, from_slice, to_binary, Deps, DepsMut, Env, Ibc3ChannelOpenResponse,
-    IbcBasicResponse, IbcChannelCloseMsg, IbcChannelConnectMsg, IbcChannelOpenMsg,
-    IbcChannelOpenResponse, IbcPacketAckMsg, IbcPacketReceiveMsg, IbcPacketTimeoutMsg,
-    IbcReceiveResponse, MessageInfo, Order, QueryRequest, QueryResponse, Response, StdResult,
+    entry_point, from_slice, to_binary, Env, Ibc3ChannelOpenResponse, IbcBasicResponse,
+    IbcChannelCloseMsg, IbcChannelConnectMsg, IbcChannelOpenMsg, IbcChannelOpenResponse,
+    IbcPacketAckMsg, IbcPacketReceiveMsg, IbcPacketTimeoutMsg, IbcReceiveResponse, MessageInfo,
+    Order, QueryRequest, QueryResponse, Response, StdResult,
 };
 use cw_utils::nonpayable;
 use osmo_bindings::{OsmosisQuery, SpotPriceResponse, Swap};
@@ -12,9 +12,13 @@ use osmo_oracle::{
 
 use crate::error::ContractError;
 use crate::msg::{
-    ExecuteMsg, InstantiateMsg, ListRouteResponse, QueryMsg, RouteInfo, RouteResponse,
+    AdminResponse, ExecuteMsg, InstantiateMsg, ListRouteResponse, QueryMsg, RouteInfo,
+    RouteResponse,
 };
 use crate::state::{ADMIN, ROUTES};
+
+type Deps<'a> = cosmwasm_std::Deps<'a, OsmosisQuery>;
+type DepsMut<'a> = cosmwasm_std::DepsMut<'a, OsmosisQuery>;
 
 #[entry_point]
 pub fn instantiate(
@@ -73,9 +77,15 @@ pub fn unregister_route(
 #[entry_point]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<QueryResponse> {
     match msg {
+        QueryMsg::Admin {} => to_binary(&query_admin(deps)?),
         QueryMsg::Route { input, output } => to_binary(&query_route(deps, input, output)?),
         QueryMsg::ListRoutes {} => to_binary(&query_list_routes(deps)?),
     }
+}
+
+pub fn query_admin(deps: Deps) -> StdResult<AdminResponse> {
+    let admin = ADMIN.load(deps.storage)?.into_string();
+    Ok(AdminResponse { admin })
 }
 
 pub fn query_route(deps: Deps, input: String, output: String) -> StdResult<RouteResponse> {
@@ -149,7 +159,7 @@ pub fn ibc_channel_close(
 /// We cannot return any meaningful response value as we do not know the response value
 /// of execution. We just return ok if we dispatched, error if we failed to dispatch
 pub fn ibc_packet_receive(
-    deps: DepsMut<OsmosisQuery>,
+    deps: DepsMut,
     _env: Env,
     msg: IbcPacketReceiveMsg,
 ) -> Result<IbcReceiveResponse, ContractError> {
@@ -161,7 +171,7 @@ pub fn ibc_packet_receive(
 }
 
 fn receive_get_price(
-    deps: DepsMut<OsmosisQuery>,
+    deps: DepsMut,
     input: String,
     output: String,
 ) -> Result<IbcReceiveResponse, ContractError> {
@@ -214,91 +224,47 @@ pub fn ibc_packet_timeout(
 mod tests {
     use super::*;
     use cosmwasm_std::testing::{
-        mock_dependencies, mock_env, mock_ibc_channel_close_init, mock_ibc_channel_connect_ack,
-        mock_ibc_channel_open_init, mock_ibc_channel_open_try, mock_ibc_packet_recv, mock_info,
-        mock_wasmd_attr, MockApi, MockQuerier, MockStorage, MOCK_CONTRACT_ADDR,
+        mock_env, mock_ibc_channel_connect_ack, mock_ibc_channel_open_init,
+        mock_ibc_channel_open_try, mock_ibc_packet_recv, mock_info, MockApi, MockQuerier,
+        MockStorage,
     };
-    use cosmwasm_std::{
-        attr, coin, coins, from_slice, BankMsg, Binary, OwnedDeps, SubMsgResponse, SubMsgResult,
-        WasmMsg,
-    };
-    use simple_ica::{APP_ORDER, BAD_APP_ORDER};
+    use cosmwasm_std::OwnedDeps;
+    use osmo_oracle::{APP_ORDER, BAD_APP_ORDER};
+    use std::marker::PhantomData;
 
     const CREATOR: &str = "creator";
-    // code id of the reflect contract
-    const REFLECT_ID: u64 = 101;
-    // address of first reflect contract instance that we created
-    const REFLECT_ADDR: &str = "reflect-acct-1";
 
-    fn setup() -> OwnedDeps<MockStorage, MockApi, MockQuerier> {
-        let mut deps = mock_dependencies();
-        let msg = InstantiateMsg {
-            reflect_code_id: REFLECT_ID,
+    fn setup() -> OwnedDeps<MockStorage, MockApi, MockQuerier, OsmosisQuery> {
+        let mut deps = OwnedDeps {
+            storage: MockStorage::default(),
+            api: MockApi::default(),
+            querier: MockQuerier::default(),
+            custom_query_type: PhantomData,
         };
+        let msg = InstantiateMsg {};
         let info = mock_info(CREATOR, &[]);
         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
         assert_eq!(0, res.messages.len());
         deps
     }
 
-    fn fake_data(reflect_addr: &str) -> Binary {
-        // works with length < 128
-        let mut encoded = vec![0x0a, reflect_addr.len() as u8];
-        encoded.extend(reflect_addr.as_bytes());
-        Binary::from(encoded)
-    }
-
-    fn fake_events(reflect_addr: &str) -> Vec<Event> {
-        let event = Event::new("instantiate").add_attributes(vec![
-            attr("code_id", "17"),
-            // We have to force this one to avoid the debug assertion against _
-            mock_wasmd_attr("_contract_address", reflect_addr),
-        ]);
-        vec![event]
-    }
-
-    // connect will run through the entire handshake to set up a proper connect and
-    // save the account (tested in detail in `proper_handshake_flow`)
-    fn connect(mut deps: DepsMut, channel_id: &str, account: impl Into<String>) {
-        let account: String = account.into();
-
-        let handshake_open = mock_ibc_channel_open_init(channel_id, APP_ORDER, IBC_APP_VERSION);
-        // first we try to open with a valid handshake
-        ibc_channel_open(deps.branch(), mock_env(), handshake_open).unwrap();
-
-        // then we connect (with counter-party version set)
-        let handshake_connect =
-            mock_ibc_channel_connect_ack(channel_id, APP_ORDER, IBC_APP_VERSION);
-        let res = ibc_channel_connect(deps.branch(), mock_env(), handshake_connect).unwrap();
-        assert_eq!(1, res.messages.len());
-        assert_eq!(1, res.events.len());
-        assert_eq!(
-            Event::new("ibc").add_attribute("channel", "connect"),
-            res.events[0]
-        );
-        let id = res.messages[0].id;
-
-        // fake a reply and ensure this works
-        let response = Reply {
-            id,
-            result: SubMsgResult::Ok(SubMsgResponse {
-                events: fake_events(&account),
-                data: Some(fake_data(&account)),
-            }),
-        };
-        reply(deps.branch(), mock_env(), response).unwrap();
-    }
-
     #[test]
     fn instantiate_works() {
-        let mut deps = mock_dependencies();
-
-        let msg = InstantiateMsg {
-            reflect_code_id: 17,
+        let mut deps = OwnedDeps {
+            storage: MockStorage::default(),
+            api: MockApi::default(),
+            querier: MockQuerier::default(),
+            custom_query_type: PhantomData,
         };
+
+        let msg = InstantiateMsg {};
         let info = mock_info("creator", &[]);
         let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-        assert_eq!(0, res.messages.len())
+        assert_eq!(0, res.messages.len());
+
+        // admin set
+        let admin = query_admin(deps.as_ref()).unwrap();
+        assert_eq!(admin.admin, "creator".to_string());
     }
 
     #[test]
@@ -328,181 +294,78 @@ mod tests {
         let handshake_connect =
             mock_ibc_channel_connect_ack(channel_id, APP_ORDER, IBC_APP_VERSION);
         let res = ibc_channel_connect(deps.as_mut(), mock_env(), handshake_connect).unwrap();
-        // and set up a reflect account
-        assert_eq!(1, res.messages.len());
-        let id = res.messages[0].id;
-        if let CosmosMsg::Wasm(WasmMsg::Instantiate {
-            admin,
-            code_id,
-            msg: _,
-            funds,
-            label,
-        }) = &res.messages[0].msg
-        {
-            assert_eq!(*admin, None);
-            assert_eq!(*code_id, REFLECT_ID);
-            assert_eq!(funds.len(), 0);
-            assert!(label.contains(channel_id));
-        } else {
-            panic!("invalid return message: {:?}", res.messages[0]);
-        }
+        assert_eq!(0, res.messages.len());
+    }
 
-        // no accounts set yet
-        let raw = query(deps.as_ref(), mock_env(), QueryMsg::ListAccounts {}).unwrap();
-        let res: ListAccountsResponse = from_slice(&raw).unwrap();
-        assert_eq!(0, res.accounts.len());
+    #[test]
+    fn register_routes() {
+        let mut deps = setup();
 
-        // fake a reply and ensure this works
-        let response = Reply {
-            id,
-            result: SubMsgResult::Ok(SubMsgResponse {
-                events: fake_events(REFLECT_ADDR),
-                data: Some(fake_data(REFLECT_ADDR)),
-            }),
+        let input = "ujuno";
+        let output = "uosmo";
+        let route = Swap {
+            pool_id: 17,
+            denom_in: "ibc/128jf83hf9823h98gh3289ghw498ghw498gh89".to_string(),
+            denom_out: "uosmo".to_string(),
         };
-        reply(deps.as_mut(), mock_env(), response).unwrap();
 
-        // ensure this is now registered
-        let raw = query(deps.as_ref(), mock_env(), QueryMsg::ListAccounts {}).unwrap();
-        let res: ListAccountsResponse = from_slice(&raw).unwrap();
-        assert_eq!(1, res.accounts.len());
-        assert_eq!(
-            &res.accounts[0],
-            &AccountInfo {
-                account: REFLECT_ADDR.into(),
-                channel_id: channel_id.to_string(),
-            }
-        );
-
-        // and the account query also works
-        let raw = query(
-            deps.as_ref(),
+        // random cannot set this
+        let msg = ExecuteMsg::RegisterRoute {
+            input: input.to_string(),
+            output: output.to_string(),
+            route: route.clone(),
+        };
+        let err = execute(
+            deps.as_mut(),
             mock_env(),
-            QueryMsg::Account {
-                channel_id: channel_id.to_string(),
-            },
+            mock_info("random", &[]),
+            msg.clone(),
         )
-        .unwrap();
-        let res: AccountResponse = from_slice(&raw).unwrap();
-        assert_eq!(res.account.unwrap(), REFLECT_ADDR);
+        .unwrap_err();
+        assert_eq!(err, ContractError::Unauthorized);
+
+        // admin sets this
+        execute(deps.as_mut(), mock_env(), mock_info(CREATOR, &[]), msg).unwrap();
+
+        // check list
+        let routes = query_list_routes(deps.as_ref()).unwrap();
+        assert_eq!(routes.routes.len(), 1);
+
+        // check hit
+        let res = query_route(deps.as_ref(), input.to_string(), output.to_string()).unwrap();
+        assert_eq!(res.route, Some(route));
+
+        // check miss
+        let res = query_route(deps.as_ref(), input.to_string(), "uatom".to_string()).unwrap();
+        assert_eq!(res.route, None);
     }
 
     #[test]
-    fn handle_dispatch_packet() {
+    fn handle_get_price_packet() {
         let mut deps = setup();
 
         let channel_id = "channel-123";
-        let account = "acct-123";
 
-        // receive a packet for an unregistered channel returns app-level error (not Result::Err)
-        let msgs_to_dispatch = vec![BankMsg::Send {
-            to_address: "my-friend".into(),
-            amount: coins(123456789, "uatom"),
-        }
-        .into()];
-        let ibc_msg = PacketMsg::Dispatch {
-            msgs: msgs_to_dispatch.clone(),
+        // set route
+        let input = "uatom";
+        let output = "uosmo";
+        let route = Swap {
+            pool_id: 17,
+            denom_in: "ibc/532532t353535432532532".to_string(),
+            denom_out: "uosmo".to_string(),
+        };
+        register_route(deps.as_mut(), input.to_string(), output.to_string(), route).unwrap();
+
+        let ibc_msg = PacketMsg::GetPrice {
+            input: input.to_string(),
+            output: "uregen".to_string(),
+            requester: "someone".to_string(),
         };
         let msg = mock_ibc_packet_recv(channel_id, &ibc_msg).unwrap();
-        // this returns an error
-        ibc_packet_receive(deps.as_mut(), mock_env(), msg).unwrap_err();
+        // this returns an error as missing route
+        let err = ibc_packet_receive(deps.as_mut(), mock_env(), msg).unwrap_err();
+        assert_eq!(err, ContractError::NoRoute);
 
-        // register the channel
-        connect(deps.as_mut(), channel_id, account);
-
-        // receive a packet for an unregistered channel returns app-level error (not Result::Err)
-        let msg = mock_ibc_packet_recv(channel_id, &ibc_msg).unwrap();
-        let res = ibc_packet_receive(deps.as_mut(), mock_env(), msg).unwrap();
-
-        // assert app-level success
-        let ack: StdAck = from_slice(&res.acknowledgement).unwrap();
-        ack.unwrap();
-
-        // and we dispatch the BankMsg via submessage
-        assert_eq!(1, res.messages.len());
-        assert_eq!(RECEIVE_DISPATCH_ID, res.messages[0].id);
-
-        // parse the output, ensuring it matches
-        if let CosmosMsg::Wasm(WasmMsg::Execute {
-            contract_addr,
-            msg,
-            funds,
-        }) = &res.messages[0].msg
-        {
-            assert_eq!(account, contract_addr.as_str());
-            assert_eq!(0, funds.len());
-            // parse the message - should callback with proper channel_id
-            let rmsg: cw1_whitelist::msg::ExecuteMsg = from_slice(msg).unwrap();
-            assert_eq!(
-                rmsg,
-                cw1_whitelist::msg::ExecuteMsg::Execute {
-                    msgs: msgs_to_dispatch
-                }
-            );
-        } else {
-            panic!("invalid return message: {:?}", res.messages[0]);
-        }
-
-        // invalid packet format on registered channel also returns error
-        let bad_data = InstantiateMsg {
-            reflect_code_id: 12345,
-        };
-        let msg = mock_ibc_packet_recv(channel_id, &bad_data).unwrap();
-        ibc_packet_receive(deps.as_mut(), mock_env(), msg).unwrap_err();
-    }
-
-    #[test]
-    fn check_close_channel() {
-        let mut deps = setup();
-
-        let channel_id = "channel-123";
-        let account = "acct-123";
-
-        // register the channel
-        connect(deps.as_mut(), channel_id, account);
-        // assign it some funds
-        let funds = vec![coin(123456, "uatom"), coin(7654321, "tgrd")];
-        deps.querier.update_balance(account, funds.clone());
-
-        // channel should be listed and have balance
-        let raw = query(deps.as_ref(), mock_env(), QueryMsg::ListAccounts {}).unwrap();
-        let res: ListAccountsResponse = from_slice(&raw).unwrap();
-        assert_eq!(1, res.accounts.len());
-        let balance = deps.as_ref().querier.query_all_balances(account).unwrap();
-        assert_eq!(funds, balance);
-
-        // close the channel
-        let channel = mock_ibc_channel_close_init(channel_id, APP_ORDER, IBC_APP_VERSION);
-        let res = ibc_channel_close(deps.as_mut(), mock_env(), channel).unwrap();
-
-        // it pulls out all money from the reflect contract
-        assert_eq!(1, res.messages.len());
-        if let CosmosMsg::Wasm(WasmMsg::Execute {
-            contract_addr, msg, ..
-        }) = &res.messages[0].msg
-        {
-            assert_eq!(contract_addr.as_str(), account);
-            let reflect: ReflectExecuteMsg = from_slice(msg).unwrap();
-            match reflect {
-                ReflectExecuteMsg::ReflectMsg { msgs } => {
-                    assert_eq!(1, msgs.len());
-                    assert_eq!(
-                        &msgs[0],
-                        &BankMsg::Send {
-                            to_address: MOCK_CONTRACT_ADDR.into(),
-                            amount: funds
-                        }
-                        .into()
-                    )
-                }
-            }
-        } else {
-            panic!("Unexpected message: {:?}", &res.messages[0]);
-        }
-
-        // and removes the account lookup
-        let raw = query(deps.as_ref(), mock_env(), QueryMsg::ListAccounts {}).unwrap();
-        let res: ListAccountsResponse = from_slice(&raw).unwrap();
-        assert_eq!(0, res.accounts.len());
+        // TODO: we want to check success, but no mocks for osmosis query
     }
 }
