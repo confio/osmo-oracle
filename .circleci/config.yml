@@ -7,9 +7,9 @@ workflows:
   version: 2
   test:
     jobs:
-      - contract_simple_ica_controller
-      - contract_simple_ica_host
-      - package_simple_ica
+      - contract_osmo_oracle_controller
+      - contract_osmo_oracle_host
+      - package_osmo_oracle
       - lint
       - wasm-build
       - ts-build
@@ -17,8 +17,8 @@ workflows:
           requires:
             - wasm-build
             - ts-build
-            - contract_simple_ica_controller
-            - contract_simple_ica_host
+            - contract_osmo_oracle_controller
+            - contract_osmo_oracle_host
 #          filters:
 #            branches:
 #              only:
@@ -41,10 +41,10 @@ workflows:
              ignore: /.*/
 
 jobs:
-  contract_simple_ica_controller:
+  contract_osmo_oracle_controller:
     docker:
       - image: rust:1.58.1
-    working_directory: ~/project/contracts/simple-ica-controller
+    working_directory: ~/project/contracts/osmo-oracle-controller
     steps:
       - checkout:
           path: ~/project
@@ -53,7 +53,7 @@ jobs:
           command: rustc --version; cargo --version; rustup --version
       - restore_cache:
           keys:
-            - cargocache-simple-ica-controller-rust:1.58.1-{{ checksum "~/project/Cargo.lock" }}
+            - cargocache-osmo-oracle-controller-rust:1.58.1-{{ checksum "~/project/Cargo.lock" }}
       - run:
           name: Unit Tests
           environment:
@@ -66,12 +66,12 @@ jobs:
           paths:
             - /usr/local/cargo/registry
             - target
-          key: cargocache-simple-ica-controller-rust:1.58.1-{{ checksum "~/project/Cargo.lock" }}
+          key: cargocache-osmo-oracle-controller-rust:1.58.1-{{ checksum "~/project/Cargo.lock" }}
 
-  contract_simple_ica_host:
+  contract_osmo_oracle_host:
     docker:
       - image: rust:1.58.1
-    working_directory: ~/project/contracts/simple-ica-host
+    working_directory: ~/project/contracts/osmo-oracle-host
     steps:
       - checkout:
           path: ~/project
@@ -80,7 +80,7 @@ jobs:
           command: rustc --version; cargo --version; rustup --version
       - restore_cache:
           keys:
-            - cargocache-simple-ica-host-rust:1.58.1-{{ checksum "~/project/Cargo.lock" }}
+            - cargocache-osmo-oracle-host-rust:1.58.1-{{ checksum "~/project/Cargo.lock" }}
       - run:
           name: Unit Tests
           environment:
@@ -93,12 +93,12 @@ jobs:
           paths:
             - /usr/local/cargo/registry
             - target
-          key: cargocache-simple-ica-host-rust:1.58.1-{{ checksum "~/project/Cargo.lock" }}
+          key: cargocache-osmo-oracle-host-rust:1.58.1-{{ checksum "~/project/Cargo.lock" }}
 
-  package_simple_ica:
+  package_osmo_oracle:
     docker:
       - image: rust:1.58.1
-    working_directory: ~/project/packages/simple-ica
+    working_directory: ~/project/packages/osmo-oracle
     steps:
       - checkout:
           path: ~/project
@@ -107,7 +107,7 @@ jobs:
           command: rustc --version; cargo --version; rustup --version; rustup target list --installed
       - restore_cache:
           keys:
-            - cargocache-v2-simple-ica:1.58.1-{{ checksum "~/project/Cargo.lock" }}
+            - cargocache-v2-osmo-oracle:1.58.1-{{ checksum "~/project/Cargo.lock" }}
       - run:
           name: Build library for native target
           command: cargo build --locked
@@ -118,7 +118,7 @@ jobs:
           paths:
             - /usr/local/cargo/registry
             - target
-          key: cargocache-v2-simple-ica:1.58.1-{{ checksum "~/project/Cargo.lock" }}
+          key: cargocache-v2-osmo-oracle:1.58.1-{{ checksum "~/project/Cargo.lock" }}
 
   lint:
     docker:
@@ -187,8 +187,8 @@ jobs:
           name: Save wasm contracts for integration test usage
           root: ./target/wasm32-unknown-unknown/release
           paths:
-            - simple_ica_controller.wasm
-            - simple_ica_host.wasm
+            - osmo_oracle_controller.wasm
+            - osmo_oracle_host.wasm
 
   ts-build:
     docker:
