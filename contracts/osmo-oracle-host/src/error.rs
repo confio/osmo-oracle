@@ -3,7 +3,7 @@ use thiserror::Error;
 use cosmwasm_std::StdError;
 use cw_utils::ParseReplyError;
 
-use simple_ica::SimpleIcaError;
+use osmo_oracle::OsmoOracleError;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum ContractError {
@@ -11,14 +11,9 @@ pub enum ContractError {
     Std(#[from] StdError),
 
     #[error("{0}")]
-    ParseReply(#[from] ParseReplyError),
-
-    #[error("{0}")]
-    SimpleIca(#[from] SimpleIcaError),
+    OsmoOracle(#[from] OsmoOracleError),
 
     #[error("Cannot register over an existing channel")]
     ChannelAlreadyRegistered,
-
-    #[error("Invalid reply id")]
-    InvalidReplyId,
+    s,
 }

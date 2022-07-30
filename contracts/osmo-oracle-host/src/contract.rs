@@ -6,7 +6,7 @@ use cosmwasm_std::{
     QueryResponse, Reply, Response, StdResult, SubMsg, WasmMsg,
 };
 use cw_utils::parse_reply_instantiate_data;
-use simple_ica::{
+use osmo_oracle::{
     check_order, check_version, BalancesResponse, DispatchResponse, PacketMsg, StdAck,
     WhoAmIResponse, IBC_APP_VERSION,
 };
