@@ -1,11 +1,11 @@
 [workspace]
 members = ["packages/*", "contracts/*"]
 
-[profile.release.package.simple-ica-controller]
+[profile.release.package.osmo-oracle-controller]
 codegen-units = 1
 incremental = false
 
-[profile.release.package.simple-ica-host]
+[profile.release.package.osmo-oracle-host]
 codegen-units = 1
 incremental = false
 
