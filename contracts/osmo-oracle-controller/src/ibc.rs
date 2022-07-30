@@ -154,16 +154,16 @@ pub fn ibc_packet_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{execute, instantiate, query};
-    use crate::msg::{AccountResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
+    use crate::contract::{execute, instantiate, query_channel, query_last_price};
+    use crate::msg::{ExecuteMsg, InstantiateMsg};
 
     use cosmwasm_std::testing::{
         mock_dependencies, mock_env, mock_ibc_channel_connect_ack, mock_ibc_channel_open_init,
         mock_ibc_channel_open_try, mock_ibc_packet_ack, mock_info, MockApi, MockQuerier,
         MockStorage,
     };
-    use cosmwasm_std::{coin, coins, BankMsg, CosmosMsg, IbcAcknowledgement, OwnedDeps};
-    use simple_ica::{APP_ORDER, BAD_APP_ORDER, IBC_APP_VERSION};
+    use cosmwasm_std::{to_binary, CosmosMsg, Decimal, IbcAcknowledgement, IbcMsg, OwnedDeps};
+    use osmo_oracle::{APP_ORDER, BAD_APP_ORDER, IBC_APP_VERSION};
 
     const CREATOR: &str = "creator";
 
@@ -187,26 +187,6 @@ mod tests {
         let handshake_connect =
             mock_ibc_channel_connect_ack(channel_id, APP_ORDER, IBC_APP_VERSION);
         let res = ibc_channel_connect(deps.branch(), mock_env(), handshake_connect).unwrap();
-
-        // this should send a WhoAmI request, which is received some blocks later
-        assert_eq!(1, res.messages.len());
-        match &res.messages[0].msg {
-            CosmosMsg::Ibc(IbcMsg::SendPacket {
-                channel_id: packet_channel,
-                ..
-            }) => assert_eq!(packet_channel.as_str(), channel_id),
-            o => panic!("Unexpected message: {:?}", o),
-        };
-    }
-
-    fn who_am_i_response(deps: DepsMut, channel_id: &str, account: impl Into<String>) {
-        let packet = PacketMsg::WhoAmI {};
-        let res = StdAck::success(WhoAmIResponse {
-            account: account.into(),
-        });
-        let ack = IbcAcknowledgement::new(res);
-        let msg = mock_ibc_packet_ack(channel_id, &packet, ack).unwrap();
-        let res = ibc_packet_ack(deps, mock_env(), msg).unwrap();
         assert_eq!(0, res.messages.len());
     }
 
@@ -228,127 +208,76 @@ mod tests {
     fn proper_handshake_flow() {
         // setup and connect handshake
         let mut deps = setup();
+
+        // no channel set
+        let r = query_channel(deps.as_ref()).unwrap();
+        assert_eq!(r.channel_id, None);
+
+        // connect
         let channel_id = "channel-1234";
         connect(deps.as_mut(), channel_id);
 
-        // check for empty account
-        let q = QueryMsg::Account {
-            channel_id: channel_id.into(),
-        };
-        let r = query(deps.as_ref(), mock_env(), q).unwrap();
-        let acct: AccountResponse = from_slice(&r).unwrap();
-        assert!(acct.remote_addr.is_none());
-        assert!(acct.remote_balance.is_empty());
-        assert_eq!(0, acct.last_update_time.nanos());
-
-        // now get feedback from WhoAmI packet
-        let remote_addr = "account-789";
-        who_am_i_response(deps.as_mut(), channel_id, remote_addr);
-
-        // account should be set up
-        let q = QueryMsg::Account {
-            channel_id: channel_id.into(),
-        };
-        let r = query(deps.as_ref(), mock_env(), q).unwrap();
-        let acct: AccountResponse = from_slice(&r).unwrap();
-        assert_eq!(acct.remote_addr.unwrap(), remote_addr);
-        assert!(acct.remote_balance.is_empty());
-        assert_eq!(0, acct.last_update_time.nanos());
+        // check proper channel
+        let r = query_channel(deps.as_ref()).unwrap();
+        assert_eq!(r.channel_id, Some(channel_id.to_string()));
     }
 
     #[test]
-    fn dispatch_message_send_and_ack() {
-        let channel_id = "channel-1234";
-        let remote_addr = "account-789";
+    fn get_price_send_and_ack_no_callback() {
+        let orig_channel_id = "channel-1234";
 
         // init contract
         let mut deps = setup();
         // channel handshake
-        connect(deps.as_mut(), channel_id);
-        // get feedback from WhoAmI packet
-        who_am_i_response(deps.as_mut(), channel_id, remote_addr);
+        connect(deps.as_mut(), orig_channel_id);
 
-        // try to dispatch a message
-        let msgs_to_dispatch = vec![BankMsg::Send {
-            to_address: "my-friend".into(),
-            amount: coins(123456789, "uatom"),
-        }
-        .into()];
-        let handle_msg = ExecuteMsg::SendMsgs {
-            channel_id: channel_id.into(),
-            msgs: msgs_to_dispatch,
+        let input = "ujuno";
+        let output = "uosmo";
+        let handle_msg = ExecuteMsg::GetPrice {
+            input: input.to_string(),
+            output: output.to_string(),
+            callback: false,
         };
-        let info = mock_info(CREATOR, &[]);
+        let info = mock_info("anyone", &[]);
         let mut res = execute(deps.as_mut(), mock_env(), info, handle_msg).unwrap();
         assert_eq!(1, res.messages.len());
         let msg = match res.messages.swap_remove(0).msg {
             CosmosMsg::Ibc(IbcMsg::SendPacket {
                 channel_id, data, ..
             }) => {
-                let ack = IbcAcknowledgement::new(StdAck::success(&()));
-                let mut msg = mock_ibc_packet_ack(&channel_id, &1u32, ack).unwrap();
+                assert_eq!(channel_id.as_str(), orig_channel_id);
+                assert_eq!(
+                    data,
+                    to_binary(&PacketMsg::GetPrice {
+                        input: input.to_string(),
+                        output: output.to_string(),
+                        requester: "anyone".to_string()
+                    })
+                    .unwrap()
+                );
+
+                let response = GetPriceResponse {
+                    spot_price: Decimal::percent(123),
+                    spot_price_with_fee: Decimal::percent(112),
+                };
+                let ack = IbcAcknowledgement::new(StdAck::success(&response));
+                let mut msg = mock_ibc_packet_ack(&channel_id, &data, ack).unwrap();
                 msg.original_packet.data = data;
                 msg
             }
             o => panic!("Unexpected message: {:?}", o),
         };
+
+        // no callbacks, but let's make sure this stores data
         let res = ibc_packet_ack(deps.as_mut(), mock_env(), msg).unwrap();
-        // no actions expected, but let's check the events to see it was dispatched properly
         assert_eq!(0, res.messages.len());
-        assert_eq!(vec![("action", "acknowledge_dispatch")], res.attributes)
-    }
 
-    #[test]
-    fn send_remote_funds() {
-        let reflect_channel_id = "channel-1234";
-        let remote_addr = "account-789";
-        let transfer_channel_id = "transfer-2";
-
-        // init contract
-        let mut deps = setup();
-        // channel handshake
-        connect(deps.as_mut(), reflect_channel_id);
-        // get feedback from WhoAmI packet
-        who_am_i_response(deps.as_mut(), reflect_channel_id, remote_addr);
-
-        // let's try to send funds to a channel that doesn't exist
-        let msg = ExecuteMsg::SendFunds {
-            reflect_channel_id: "random-channel".into(),
-            transfer_channel_id: transfer_channel_id.into(),
+        let price = query_last_price(deps.as_ref(), input.to_string(), output.to_string()).unwrap();
+        let expected = LastPriceResponse {
+            spot_price: Decimal::percent(123),
+            spot_price_with_fee: Decimal::percent(112),
+            updated: mock_env().block.time,
         };
-        let info = mock_info(CREATOR, &coins(12344, "utrgd"));
-        execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
-
-        // let's try with no sent funds in the message
-        let msg = ExecuteMsg::SendFunds {
-            reflect_channel_id: reflect_channel_id.into(),
-            transfer_channel_id: transfer_channel_id.into(),
-        };
-        let info = mock_info(CREATOR, &[]);
-        execute(deps.as_mut(), mock_env(), info, msg).unwrap_err();
-
-        // 3rd times the charm
-        let msg = ExecuteMsg::SendFunds {
-            reflect_channel_id: reflect_channel_id.into(),
-            transfer_channel_id: transfer_channel_id.into(),
-        };
-        let info = mock_info(CREATOR, &coins(12344, "utrgd"));
-        let res = execute(deps.as_mut(), mock_env(), info, msg).unwrap();
-        assert_eq!(1, res.messages.len());
-        match &res.messages[0].msg {
-            CosmosMsg::Ibc(IbcMsg::Transfer {
-                channel_id,
-                to_address,
-                amount,
-                timeout,
-            }) => {
-                assert_eq!(transfer_channel_id, channel_id.as_str());
-                assert_eq!(remote_addr, to_address.as_str());
-                assert_eq!(&coin(12344, "utrgd"), amount);
-                assert!(timeout.block().is_none());
-                assert!(timeout.timestamp().is_some());
-            }
-            o => panic!("unexpected message: {:?}", o),
-        }
+        assert_eq!(price, expected);
     }
 }

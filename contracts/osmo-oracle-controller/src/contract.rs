@@ -76,31 +76,11 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<QueryResponse> {
     }
 }
 
-fn query_last_price(deps: Deps, input: String, output: String) -> StdResult<LastPriceResponse> {
+pub fn query_last_price(deps: Deps, input: String, output: String) -> StdResult<LastPriceResponse> {
     LAST_PRICE.load(deps.storage, (&input, &output))
 }
 
-fn query_channel(deps: Deps) -> StdResult<ChannelResponse> {
+pub fn query_channel(deps: Deps) -> StdResult<ChannelResponse> {
     let channel_id = CHANNEL.may_load(deps.storage)?;
     Ok(ChannelResponse { channel_id })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-
-    const CREATOR: &str = "creator";
-
-    #[test]
-    fn instantiate_works() {
-        let mut deps = mock_dependencies();
-        let msg = InstantiateMsg {};
-        let info = mock_info(CREATOR, &[]);
-        let res = instantiate(deps.as_mut(), mock_env(), info, msg).unwrap();
-        assert_eq!(0, res.messages.len());
-
-        let admin = query_admin(deps.as_ref()).unwrap();
-        assert_eq!(CREATOR, admin.admin.as_str());
-    }
 }
