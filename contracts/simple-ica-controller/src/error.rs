@@ -1,8 +1,8 @@
 use thiserror::Error;
 
 use cosmwasm_std::StdError;
-
-use simple_ica::SimpleIcaError;
+use cw_utils::PaymentError;
+use osmo_oracle::OsmoOracleError;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum ContractError {
@@ -10,11 +10,14 @@ pub enum ContractError {
     Std(#[from] StdError),
 
     #[error("{0}")]
-    SimpleIca(#[from] SimpleIcaError),
+    OsmoOracle(#[from] OsmoOracleError),
 
-    #[error("No account for channel {0}")]
-    UnregisteredChannel(String),
+    #[error("{0}")]
+    Payment(#[from] PaymentError),
 
-    #[error("remote account changed from {old} to {addr}")]
-    RemoteAccountChanged { addr: String, old: String },
+    #[error("No channel registered")]
+    UnregisteredChannel,
+
+    #[error("Channel already registered")]
+    AlreadyRegistered,
 }

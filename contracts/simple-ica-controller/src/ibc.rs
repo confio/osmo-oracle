@@ -1,22 +1,25 @@
 use cosmwasm_std::{
-    entry_point, from_slice, to_binary, DepsMut, Env, Ibc3ChannelOpenResponse, IbcBasicResponse,
-    IbcChannelCloseMsg, IbcChannelConnectMsg, IbcChannelOpenMsg, IbcMsg, IbcPacketAckMsg,
+    entry_point, from_slice, DepsMut, Env, Ibc3ChannelOpenResponse, IbcBasicResponse,
+    IbcChannelCloseMsg, IbcChannelConnectMsg, IbcChannelOpenMsg, IbcPacketAckMsg,
     IbcPacketReceiveMsg, IbcPacketTimeoutMsg, IbcReceiveResponse, StdResult,
 };
 
-use simple_ica::{check_order, check_version, BalancesResponse, PacketMsg, StdAck, WhoAmIResponse};
+use osmo_oracle::{
+    build_callback, check_order, check_version, GetPriceResponse, PacketMsg, StdAck,
+};
 
 use crate::error::ContractError;
-use crate::state::{AccountData, ACCOUNTS};
+use crate::msg::LastPriceResponse;
+use crate::state::{CALLBACK, CHANNEL, LAST_PRICE};
 
 // TODO: make configurable?
 /// packets live one hour
 pub const PACKET_LIFETIME: u64 = 60 * 60;
 
 #[entry_point]
-/// enforces ordering and versioing constraints
+/// enforces ordering and versioning constraints
 pub fn ibc_channel_open(
-    _deps: DepsMut,
+    deps: DepsMut,
     _env: Env,
     msg: IbcChannelOpenMsg,
 ) -> Result<Option<Ibc3ChannelOpenResponse>, ContractError> {
@@ -26,54 +29,44 @@ pub fn ibc_channel_open(
     if let Some(counter_version) = msg.counterparty_version() {
         check_version(counter_version)?;
     }
-
-    Ok(None)
+    // ensure we have no existing channel_id
+    if CHANNEL.may_load(deps.storage)?.is_some() {
+        Err(ContractError::AlreadyRegistered)
+    } else {
+        Ok(None)
+    }
 }
 
 #[entry_point]
-/// once it's established, we send a WhoAmI message
 pub fn ibc_channel_connect(
     deps: DepsMut,
-    env: Env,
+    _env: Env,
     msg: IbcChannelConnectMsg,
-) -> StdResult<IbcBasicResponse> {
+) -> Result<IbcBasicResponse, ContractError> {
     let channel = msg.channel();
-    let channel_id = &channel.endpoint.channel_id;
+    check_version(&channel.version)?;
+    if let Some(counter_version) = msg.counterparty_version() {
+        check_version(counter_version)?;
+    }
 
-    // create an account holder the channel exists (not found if not registered)
-    let data = AccountData::default();
-    ACCOUNTS.save(deps.storage, channel_id, &data)?;
-
-    // construct a packet to send
-    let packet = PacketMsg::WhoAmI {};
-    let msg = IbcMsg::SendPacket {
-        channel_id: channel_id.clone(),
-        data: to_binary(&packet)?,
-        timeout: env.block.time.plus_seconds(PACKET_LIFETIME).into(),
-    };
-
-    Ok(IbcBasicResponse::new()
-        .add_message(msg)
-        .add_attribute("action", "ibc_connect")
-        .add_attribute("channel_id", channel_id))
+    // store channel id on first connect
+    if CHANNEL.may_load(deps.storage)?.is_some() {
+        Err(ContractError::AlreadyRegistered)
+    } else {
+        CHANNEL.save(deps.storage, &channel.endpoint.channel_id)?;
+        Ok(IbcBasicResponse::new())
+    }
 }
 
 #[entry_point]
-/// On closed channel, simply delete the account from our local store
+/// On closed channel, simply delete the channel
 pub fn ibc_channel_close(
     deps: DepsMut,
     _env: Env,
-    msg: IbcChannelCloseMsg,
+    _msg: IbcChannelCloseMsg,
 ) -> StdResult<IbcBasicResponse> {
-    let channel = msg.channel();
-
-    // remove the channel
-    let channel_id = &channel.endpoint.channel_id;
-    ACCOUNTS.remove(deps.storage, channel_id);
-
-    Ok(IbcBasicResponse::new()
-        .add_attribute("action", "ibc_close")
-        .add_attribute("channel_id", channel_id))
+    CHANNEL.remove(deps.storage);
+    Ok(IbcBasicResponse::new())
 }
 
 #[entry_point]
@@ -94,97 +87,58 @@ pub fn ibc_packet_ack(
     env: Env,
     msg: IbcPacketAckMsg,
 ) -> Result<IbcBasicResponse, ContractError> {
-    // which local channel was this packet send from
-    let caller = msg.original_packet.src.channel_id;
     // we need to parse the ack based on our request
-    let packet: PacketMsg = from_slice(&msg.original_packet.data)?;
     let res: StdAck = from_slice(&msg.acknowledgement.data)?;
-
-    match packet {
-        PacketMsg::Dispatch { .. } => acknowledge_dispatch(deps, caller, res),
-        PacketMsg::WhoAmI {} => acknowledge_who_am_i(deps, caller, res),
-        PacketMsg::Balances {} => acknowledge_balances(deps, env, caller, res),
+    match res {
+        StdAck::Result(data) => {
+            let packet: PacketMsg = from_slice(&msg.original_packet.data)?;
+            match packet {
+                PacketMsg::GetPrice {
+                    input,
+                    output,
+                    requester,
+                } => {
+                    let msg: GetPriceResponse = from_slice(&data)?;
+                    acknowledge_get_price(deps, env, input, output, requester, msg)
+                }
+            }
+        }
+        StdAck::Error(e) => Ok(IbcBasicResponse::new()
+            .add_attribute("ack", "failed")
+            .add_attribute("error", e)),
     }
 }
 
 // receive PacketMsg::Dispatch response
 #[allow(clippy::unnecessary_wraps)]
-fn acknowledge_dispatch(
-    _deps: DepsMut,
-    _caller: String,
-    _ack: StdAck,
-) -> Result<IbcBasicResponse, ContractError> {
-    // TODO: actually handle success/error?
-    Ok(IbcBasicResponse::new().add_attribute("action", "acknowledge_dispatch"))
-}
-
-// receive PacketMsg::WhoAmI response
-// store address info in accounts info
-fn acknowledge_who_am_i(
-    deps: DepsMut,
-    caller: String,
-    ack: StdAck,
-) -> Result<IbcBasicResponse, ContractError> {
-    // ignore errors (but mention in log)
-    let WhoAmIResponse { account } = match ack {
-        StdAck::Result(res) => from_slice(&res)?,
-        StdAck::Error(e) => {
-            return Ok(IbcBasicResponse::new()
-                .add_attribute("action", "acknowledge_who_am_i")
-                .add_attribute("error", e))
-        }
-    };
-
-    ACCOUNTS.update(deps.storage, &caller, |acct| {
-        match acct {
-            Some(mut acct) => {
-                // set the account the first time
-                if acct.remote_addr.is_none() {
-                    acct.remote_addr = Some(account);
-                }
-                Ok(acct)
-            }
-            None => Err(ContractError::UnregisteredChannel(caller.clone())),
-        }
-    })?;
-
-    Ok(IbcBasicResponse::new().add_attribute("action", "acknowledge_who_am_i"))
-}
-
-// receive PacketMsg::Balances response
-fn acknowledge_balances(
+fn acknowledge_get_price(
     deps: DepsMut,
     env: Env,
-    caller: String,
-    ack: StdAck,
+    input: String,
+    output: String,
+    requester: String,
+    response: GetPriceResponse,
 ) -> Result<IbcBasicResponse, ContractError> {
-    // ignore errors (but mention in log)
-    let BalancesResponse { account, balances } = match ack {
-        StdAck::Result(res) => from_slice(&res)?,
-        StdAck::Error(e) => {
-            return Ok(IbcBasicResponse::new()
-                .add_attribute("action", "acknowledge_balances")
-                .add_attribute("error", e))
-        }
+    // store the price locally
+    let data = LastPriceResponse {
+        spot_price: response.spot_price.clone(),
+        spot_price_with_fee: response.spot_price_with_fee.clone(),
+        updated: env.block.time,
     };
+    LAST_PRICE.save(deps.storage, (&input, &output), &data)?;
 
-    ACCOUNTS.update(deps.storage, &caller, |acct| match acct {
-        Some(acct) => {
-            if let Some(old) = acct.remote_addr {
-                if old != account {
-                    return Err(ContractError::RemoteAccountChanged { old, addr: account });
-                }
-            }
-            Ok(AccountData {
-                last_update_time: env.block.time,
-                remote_addr: Some(account),
-                remote_balance: balances,
-            })
-        }
-        None => Err(ContractError::UnregisteredChannel(caller.clone())),
-    })?;
+    // start res
+    let mut res = IbcBasicResponse::new().add_attribute("ack", "success");
 
-    Ok(IbcBasicResponse::new().add_attribute("action", "acknowledge_balances"))
+    // check to see if we do a callback
+    if CALLBACK
+        .may_load(deps.storage, (&requester, &input, &output))?
+        .unwrap_or(false)
+    {
+        res = res.add_message(build_callback(response, requester)?);
+    }
+
+    Ok(res)
 }
 
 #[entry_point]
@@ -194,7 +148,7 @@ pub fn ibc_packet_timeout(
     _env: Env,
     _msg: IbcPacketTimeoutMsg,
 ) -> StdResult<IbcBasicResponse> {
-    Ok(IbcBasicResponse::new().add_attribute("action", "ibc_packet_timeout"))
+    Ok(IbcBasicResponse::new())
 }
 
 #[cfg(test)]

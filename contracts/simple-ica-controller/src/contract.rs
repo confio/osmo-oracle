@@ -1,200 +1,88 @@
+use crate::error::ContractError;
 use cosmwasm_std::{
-    entry_point, to_binary, CosmosMsg, Deps, DepsMut, Env, IbcMsg, MessageInfo, Order,
-    QueryResponse, Response, StdError, StdResult,
+    entry_point, to_binary, Deps, DepsMut, Env, IbcMsg, MessageInfo, QueryResponse, Response,
+    StdResult,
 };
-use simple_ica::PacketMsg;
+use osmo_oracle::PacketMsg;
 
 use crate::ibc::PACKET_LIFETIME;
-use crate::msg::{
-    AccountInfo, AccountResponse, AdminResponse, ExecuteMsg, InstantiateMsg, ListAccountsResponse,
-    QueryMsg,
-};
-use crate::state::{Config, ACCOUNTS, CONFIG};
+use crate::msg::{ChannelResponse, ExecuteMsg, InstantiateMsg, LastPriceResponse, QueryMsg};
+use crate::state::{CALLBACK, CHANNEL, LAST_PRICE};
 
 #[entry_point]
 pub fn instantiate(
-    deps: DepsMut,
+    _deps: DepsMut,
     _env: Env,
-    info: MessageInfo,
+    _info: MessageInfo,
     _msg: InstantiateMsg,
 ) -> StdResult<Response> {
-    // we store the reflect_id for creating accounts later
-    let cfg = Config { admin: info.sender };
-    CONFIG.save(deps.storage, &cfg)?;
-
-    Ok(Response::new().add_attribute("action", "instantiate"))
+    Ok(Response::new())
 }
 
 #[entry_point]
-pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> StdResult<Response> {
+pub fn execute(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    msg: ExecuteMsg,
+) -> Result<Response, ContractError> {
+    cw_utils::nonpayable(&info)?;
     match msg {
-        ExecuteMsg::UpdateAdmin { admin } => execute_update_admin(deps, info, admin),
-        ExecuteMsg::SendMsgs { channel_id, msgs } => {
-            execute_send_msgs(deps, env, info, channel_id, msgs)
-        }
-        ExecuteMsg::CheckRemoteBalance { channel_id } => {
-            execute_check_remote_balance(deps, env, info, channel_id)
-        }
-        ExecuteMsg::SendFunds {
-            reflect_channel_id,
-            transfer_channel_id,
-        } => execute_send_funds(deps, env, info, reflect_channel_id, transfer_channel_id),
+        ExecuteMsg::GetPrice {
+            input,
+            output,
+            callback,
+        } => execute_get_price(deps, env, info, input, output, callback),
     }
 }
 
-pub fn execute_update_admin(
-    deps: DepsMut,
-    info: MessageInfo,
-    new_admin: String,
-) -> StdResult<Response> {
-    // auth check
-    let mut cfg = CONFIG.load(deps.storage)?;
-    if info.sender != cfg.admin {
-        return Err(StdError::generic_err("Only admin may set new admin"));
-    }
-    cfg.admin = deps.api.addr_validate(&new_admin)?;
-    CONFIG.save(deps.storage, &cfg)?;
-
-    Ok(Response::new()
-        .add_attribute("action", "handle_update_admin")
-        .add_attribute("new_admin", cfg.admin))
-}
-
-pub fn execute_send_msgs(
+pub fn execute_get_price(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    channel_id: String,
-    msgs: Vec<CosmosMsg>,
-) -> StdResult<Response> {
-    // auth check
-    let cfg = CONFIG.load(deps.storage)?;
-    if info.sender != cfg.admin {
-        return Err(StdError::generic_err("Only admin may send messages"));
-    }
-    // ensure the channel exists (not found if not registered)
-    ACCOUNTS.load(deps.storage, &channel_id)?;
+    input: String,
+    output: String,
+    callback: bool,
+) -> Result<Response, ContractError> {
+    // Record if we want a callback
+    CALLBACK.save(
+        deps.storage,
+        (info.sender.as_str(), &input, &output),
+        &callback,
+    )?;
+    let channel_id = CHANNEL.load(deps.storage)?;
 
-    // construct a packet to send
-    let packet = PacketMsg::Dispatch { msgs };
+    // Trigger packet
+    let packet = PacketMsg::GetPrice {
+        input,
+        output,
+        requester: info.sender.into(),
+    };
     let msg = IbcMsg::SendPacket {
         channel_id,
         data: to_binary(&packet)?,
         timeout: env.block.time.plus_seconds(PACKET_LIFETIME).into(),
     };
 
-    let res = Response::new()
-        .add_message(msg)
-        .add_attribute("action", "handle_send_msgs");
-    Ok(res)
-}
-
-pub fn execute_check_remote_balance(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    channel_id: String,
-) -> StdResult<Response> {
-    // auth check
-    let cfg = CONFIG.load(deps.storage)?;
-    if info.sender != cfg.admin {
-        return Err(StdError::generic_err("Only admin may send messages"));
-    }
-    // ensure the channel exists (not found if not registered)
-    ACCOUNTS.load(deps.storage, &channel_id)?;
-
-    // construct a packet to send
-    let packet = PacketMsg::Balances {};
-    let msg = IbcMsg::SendPacket {
-        channel_id,
-        data: to_binary(&packet)?,
-        timeout: env.block.time.plus_seconds(PACKET_LIFETIME).into(),
-    };
-
-    let res = Response::new()
-        .add_message(msg)
-        .add_attribute("action", "handle_check_remote_balance");
-    Ok(res)
-}
-
-pub fn execute_send_funds(
-    deps: DepsMut,
-    env: Env,
-    mut info: MessageInfo,
-    reflect_channel_id: String,
-    transfer_channel_id: String,
-) -> StdResult<Response> {
-    // intentionally no auth check
-
-    // require some funds
-    let amount = match info.funds.pop() {
-        Some(coin) => coin,
-        None => {
-            return Err(StdError::generic_err(
-                "you must send the coins you wish to ibc transfer",
-            ))
-        }
-    };
-    // if there are any more coins, reject the message
-    if !info.funds.is_empty() {
-        return Err(StdError::generic_err("you can only ibc transfer one coin"));
-    }
-
-    // load remote account
-    let data = ACCOUNTS.load(deps.storage, &reflect_channel_id)?;
-    let remote_addr = match data.remote_addr {
-        Some(addr) => addr,
-        None => {
-            return Err(StdError::generic_err(
-                "We don't have the remote address for this channel",
-            ))
-        }
-    };
-
-    // construct a packet to send
-    let msg = IbcMsg::Transfer {
-        channel_id: transfer_channel_id,
-        to_address: remote_addr,
-        amount,
-        timeout: env.block.time.plus_seconds(PACKET_LIFETIME).into(),
-    };
-
-    let res = Response::new()
-        .add_message(msg)
-        .add_attribute("action", "handle_send_funds");
+    let res = Response::new().add_message(msg);
     Ok(res)
 }
 
 #[entry_point]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<QueryResponse> {
     match msg {
-        QueryMsg::Admin {} => to_binary(&query_admin(deps)?),
-        QueryMsg::Account { channel_id } => to_binary(&query_account(deps, channel_id)?),
-        QueryMsg::ListAccounts {} => to_binary(&query_list_accounts(deps)?),
+        QueryMsg::LastPrice { input, output } => to_binary(&query_last_price(deps, input, output)?),
+        QueryMsg::Channel {} => to_binary(&query_channel(deps)?),
     }
 }
 
-fn query_account(deps: Deps, channel_id: String) -> StdResult<AccountResponse> {
-    let account = ACCOUNTS.load(deps.storage, &channel_id)?;
-    Ok(account.into())
+fn query_last_price(deps: Deps, input: String, output: String) -> StdResult<LastPriceResponse> {
+    LAST_PRICE.load(deps.storage, (&input, &output))
 }
 
-fn query_list_accounts(deps: Deps) -> StdResult<ListAccountsResponse> {
-    let accounts = ACCOUNTS
-        .range(deps.storage, None, None, Order::Ascending)
-        .map(|r| {
-            let (channel_id, account) = r?;
-            Ok(AccountInfo::convert(channel_id, account))
-        })
-        .collect::<StdResult<_>>()?;
-    Ok(ListAccountsResponse { accounts })
-}
-
-fn query_admin(deps: Deps) -> StdResult<AdminResponse> {
-    let Config { admin } = CONFIG.load(deps.storage)?;
-    Ok(AdminResponse {
-        admin: admin.into(),
-    })
+fn query_channel(deps: Deps) -> StdResult<ChannelResponse> {
+    let channel_id = CHANNEL.may_load(deps.storage)?;
+    Ok(ChannelResponse { channel_id })
 }
 
 #[cfg(test)]

@@ -384,6 +384,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 
 [[package]]
+name = "osmo-oracle"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "schemars",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "pkcs8"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -559,17 +570,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "simple-ica"
-version = "0.1.0"
-dependencies = [
- "cosmwasm-schema",
- "cosmwasm-std",
- "schemars",
- "serde",
- "thiserror",
-]
-
-[[package]]
 name = "simple-ica-controller"
 version = "0.1.0"
 dependencies = [
@@ -577,9 +577,9 @@ dependencies = [
  "cosmwasm-std",
  "cw-storage-plus",
  "cw-utils",
+ "osmo-oracle",
  "schemars",
  "serde",
- "simple-ica",
  "thiserror",
 ]
 
@@ -592,9 +592,9 @@ dependencies = [
  "cw-storage-plus",
  "cw-utils",
  "cw1-whitelist",
+ "osmo-oracle",
  "schemars",
  "serde",
- "simple-ica",
  "thiserror",
 ]
 
