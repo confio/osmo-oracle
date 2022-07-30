@@ -7,9 +7,17 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PacketMsg {
-    Dispatch { msgs: Vec<CosmosMsg> },
-    WhoAmI {},
-    Balances {},
+    GetPrice {
+        input: String,
+        output: String,
+        with_swap_fee: bool,
+    },
+}
+
+/// Return the data field for each message
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct GetPriceResponse {
+    pub spot_price: Decimal,
 }
 
 /// This is a generic ICS acknowledgement format.
@@ -55,25 +63,4 @@ impl StdAck {
             StdAck::Error(err) => err,
         }
     }
-}
-
-/// Return the data field for each message
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct DispatchResponse {
-    pub results: Vec<Binary>,
-}
-
-/// This is the success response we send on ack for PacketMsg::WhoAmI.
-/// Return the caller's account address on the remote chain
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct WhoAmIResponse {
-    pub account: String,
-}
-
-/// This is the success response we send on ack for PacketMsg::Balance.
-/// Just acknowledge success or error
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct BalancesResponse {
-    pub account: String,
-    pub balances: Vec<Coin>,
 }

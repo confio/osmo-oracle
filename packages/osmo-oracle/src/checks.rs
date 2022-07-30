@@ -4,7 +4,7 @@ use cosmwasm_std::IbcOrder;
 use thiserror::Error;
 
 #[derive(Error, Debug, PartialEq)]
-pub enum SimpleIcaError {
+pub enum OsmoOracleError {
     #[error("Only supports unordered channels")]
     InvalidChannelOrder,
 
