@@ -7,7 +7,7 @@ use osmo_oracle::PacketMsg;
 
 use crate::ibc::PACKET_LIFETIME;
 use crate::msg::{ChannelResponse, ExecuteMsg, InstantiateMsg, LastPriceResponse, QueryMsg};
-use crate::state::{CALLBACK, CHANNEL, LAST_PRICE};
+use crate::state::{CHANNEL, LAST_PRICE};
 
 #[entry_point]
 pub fn instantiate(
@@ -44,19 +44,18 @@ pub fn execute_get_price(
     output: String,
     callback: bool,
 ) -> Result<Response, ContractError> {
-    // Record if we want a callback
-    CALLBACK.save(
-        deps.storage,
-        (info.sender.as_str(), &input, &output),
-        &callback,
-    )?;
     let channel_id = CHANNEL.load(deps.storage)?;
+    let requester = if callback {
+        Some(info.sender.into_string())
+    } else {
+        None
+    };
 
     // Trigger packet
     let packet = PacketMsg::GetPrice {
         input,
         output,
-        requester: info.sender.into(),
+        requester,
     };
     let msg = IbcMsg::SendPacket {
         channel_id,

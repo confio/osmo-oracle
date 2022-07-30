@@ -4,7 +4,7 @@ mod ibc_msg;
 
 use cosmwasm_std::IbcOrder;
 
-pub use crate::callback::build_callback;
+pub use crate::callback::{build_callback, GetPriceAcknowledgement, GotPriceCallbackMsg};
 pub use crate::checks::{check_order, check_version, OsmoOracleError};
 pub use crate::ibc_msg::{GetPriceResponse, PacketMsg, StdAck};
 

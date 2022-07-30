@@ -4,9 +4,5 @@ use crate::msg::LastPriceResponse;
 
 // key is (input, output)
 pub const LAST_PRICE: Map<(&str, &str), LastPriceResponse> = Map::new("last_price");
-
-// record if we should do a callback for (sender, input, output)
-pub const CALLBACK: Map<(&str, &str, &str), bool> = Map::new("callbacks");
-
 // we only store one channel, ensure exactly one handshake then use that for all queries
 pub const CHANNEL: Item<String> = Item::new("channel");

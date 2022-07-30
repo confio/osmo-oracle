@@ -359,7 +359,7 @@ mod tests {
         let ibc_msg = PacketMsg::GetPrice {
             input: input.to_string(),
             output: "uregen".to_string(),
-            requester: "someone".to_string(),
+            requester: Some("someone".to_string()),
         };
         let msg = mock_ibc_packet_recv(channel_id, &ibc_msg).unwrap();
         // this returns an error as missing route

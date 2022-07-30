@@ -10,7 +10,7 @@ use osmo_oracle::{
 
 use crate::error::ContractError;
 use crate::msg::LastPriceResponse;
-use crate::state::{CALLBACK, CHANNEL, LAST_PRICE};
+use crate::state::{CHANNEL, LAST_PRICE};
 
 // TODO: make configurable?
 /// packets live one hour
@@ -116,7 +116,7 @@ fn acknowledge_get_price(
     env: Env,
     input: String,
     output: String,
-    requester: String,
+    requester: Option<String>,
     response: GetPriceResponse,
 ) -> Result<IbcBasicResponse, ContractError> {
     // store the price locally
@@ -131,11 +131,8 @@ fn acknowledge_get_price(
     let mut res = IbcBasicResponse::new().add_attribute("ack", "success");
 
     // check to see if we do a callback
-    if CALLBACK
-        .may_load(deps.storage, (&requester, &input, &output))?
-        .unwrap_or(false)
-    {
-        res = res.add_message(build_callback(response, requester)?);
+    if let Some(contract) = requester {
+        res = res.add_message(build_callback(response, input, output, contract)?);
     }
 
     Ok(res)
@@ -162,8 +159,12 @@ mod tests {
         mock_ibc_channel_open_try, mock_ibc_packet_ack, mock_info, MockApi, MockQuerier,
         MockStorage,
     };
-    use cosmwasm_std::{to_binary, CosmosMsg, Decimal, IbcAcknowledgement, IbcMsg, OwnedDeps};
-    use osmo_oracle::{APP_ORDER, BAD_APP_ORDER, IBC_APP_VERSION};
+    use cosmwasm_std::{
+        to_binary, CosmosMsg, Decimal, IbcAcknowledgement, IbcMsg, OwnedDeps, WasmMsg,
+    };
+    use osmo_oracle::{
+        GetPriceAcknowledgement, GotPriceCallbackMsg, APP_ORDER, BAD_APP_ORDER, IBC_APP_VERSION,
+    };
 
     const CREATOR: &str = "creator";
 
@@ -251,7 +252,7 @@ mod tests {
                     to_binary(&PacketMsg::GetPrice {
                         input: input.to_string(),
                         output: output.to_string(),
-                        requester: "anyone".to_string()
+                        requester: None,
                     })
                     .unwrap()
                 );
@@ -279,5 +280,88 @@ mod tests {
             updated: mock_env().block.time,
         };
         assert_eq!(price, expected);
+    }
+
+    #[test]
+    fn get_price_send_and_ack_with_callback() {
+        let orig_channel_id = "channel-1234";
+
+        // init contract
+        let mut deps = setup();
+        // channel handshake
+        connect(deps.as_mut(), orig_channel_id);
+
+        let input = "ujuno";
+        let output = "uosmo";
+        let handle_msg = ExecuteMsg::GetPrice {
+            input: input.to_string(),
+            output: output.to_string(),
+            callback: true,
+        };
+        let info = mock_info("call-me-back", &[]);
+        let mut res = execute(deps.as_mut(), mock_env(), info, handle_msg).unwrap();
+        assert_eq!(1, res.messages.len());
+        let msg = match res.messages.swap_remove(0).msg {
+            CosmosMsg::Ibc(IbcMsg::SendPacket {
+                channel_id, data, ..
+            }) => {
+                assert_eq!(channel_id.as_str(), orig_channel_id);
+                assert_eq!(
+                    data,
+                    to_binary(&PacketMsg::GetPrice {
+                        input: input.to_string(),
+                        output: output.to_string(),
+                        requester: Some("call-me-back".to_string())
+                    })
+                    .unwrap()
+                );
+
+                let response = GetPriceResponse {
+                    spot_price: Decimal::percent(123),
+                    spot_price_with_fee: Decimal::percent(112),
+                };
+                let ack = IbcAcknowledgement::new(StdAck::success(&response));
+                let mut msg = mock_ibc_packet_ack(&channel_id, &data, ack).unwrap();
+                msg.original_packet.data = data;
+                msg
+            }
+            o => panic!("Unexpected message: {:?}", o),
+        };
+
+        // ensure callbacks, but let's make sure this stores data
+        let mut res = ibc_packet_ack(deps.as_mut(), mock_env(), msg).unwrap();
+        assert_eq!(1, res.messages.len());
+
+        let price = query_last_price(deps.as_ref(), input.to_string(), output.to_string()).unwrap();
+        let expected = LastPriceResponse {
+            spot_price: Decimal::percent(123),
+            spot_price_with_fee: Decimal::percent(112),
+            updated: mock_env().block.time,
+        };
+        assert_eq!(price, expected);
+
+        // make sure we have proper callback
+        match res.messages.swap_remove(0).msg {
+            CosmosMsg::Wasm(WasmMsg::Execute {
+                contract_addr,
+                msg,
+                funds,
+            }) => {
+                assert_eq!(funds.len(), 0);
+                // this is always the original caller
+                assert_eq!(contract_addr.as_str(), "call-me-back");
+                let parsed: GotPriceCallbackMsg = from_slice(&msg).unwrap();
+                assert_eq!(
+                    parsed,
+                    GotPriceCallbackMsg::GotPrice(GetPriceAcknowledgement {
+                        input: input.to_string(),
+                        output: output.to_string(),
+                        spot_price: Decimal::percent(123),
+                        spot_price_with_fee: Decimal::percent(112),
+                    })
+                );
+            }
+            o => panic!("Unexpected message: {:?}", o),
+        };
     }
 }

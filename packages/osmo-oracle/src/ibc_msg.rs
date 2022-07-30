@@ -14,7 +14,7 @@ pub enum PacketMsg {
         // token to receive
         output: String,
         // the requester on controller side, for handling acks
-        requester: String,
+        requester: Option<String>,
     },
 }
 
