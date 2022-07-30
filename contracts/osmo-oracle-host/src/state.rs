@@ -1,17 +1,8 @@
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-use cosmwasm_std::{Addr, Binary};
+use cosmwasm_std::Addr;
 use cw_storage_plus::{Item, Map};
+use osmo_bindings::Swap;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct Config {
-    pub reflect_code_id: u64,
-}
+pub const ADMIN: Item<Addr> = Item::new("admin");
+pub const ROUTES: Map<(&str, &str), Swap> = Map::new("routes");
 
-pub const CONFIG: Item<Config> = Item::new("config");
-pub const PENDING: Item<String> = Item::new("pending");
-pub const ACCOUNTS: Map<&str, Addr> = Map::new("accounts");
-
-// this stores all results from current dispatch
-pub const RESULTS: Item<Vec<Binary>> = Item::new("results");
+// note: we allow many channels to the host and treat them equally

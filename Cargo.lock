@@ -384,6 +384,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 
 [[package]]
+name = "osmo-bindings"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d29a49bf5df140714e63e3a13b6d6c7b7903620c4e3451476bb59cf50c1c7f88"
+dependencies = [
+ "cosmwasm-std",
+ "schemars",
+ "serde",
+]
+
+[[package]]
 name = "osmo-oracle"
 version = "0.1.0"
 dependencies = [
@@ -417,6 +428,7 @@ dependencies = [
  "cw-storage-plus",
  "cw-utils",
  "cw1-whitelist",
+ "osmo-bindings",
  "osmo-oracle",
  "schemars",
  "serde",

@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use cosmwasm_std::StdError;
-use cw_utils::ParseReplyError;
+use cw_utils::PaymentError;
 
 use osmo_oracle::OsmoOracleError;
 
@@ -13,7 +13,12 @@ pub enum ContractError {
     #[error("{0}")]
     OsmoOracle(#[from] OsmoOracleError),
 
-    #[error("Cannot register over an existing channel")]
-    ChannelAlreadyRegistered,
-    s,
+    #[error("{0}")]
+    Payment(#[from] PaymentError),
+
+    #[error("Unauthorized")]
+    Unauthorized,
+
+    #[error("Not such route")]
+    NoRoute,
 }

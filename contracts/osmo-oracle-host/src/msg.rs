@@ -1,42 +1,45 @@
-use cosmwasm_std::CosmosMsg;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Just needs to know the code_id of a reflect contract to spawn sub-accounts
+use osmo_bindings::Swap;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct InstantiateMsg {
-    pub reflect_code_id: u64,
+pub struct InstantiateMsg {}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecuteMsg {
+    /// Registers a new route for a pair
+    RegisterRoute {
+        input: String,
+        output: String,
+        route: Swap,
+    },
+    /// Removes previously registered route
+    UnregisterRoute { input: String, output: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
-    /// Returns (reflect) account that is attached to this channel,
-    /// or none.
-    Account { channel_id: String },
-    /// Returns all (channel, reflect_account) pairs.
-    /// No pagination - this is a test contract
-    ListAccounts {},
+    Route { input: String, output: String },
+    // TODO: pagination
+    ListRoutes {},
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct AccountResponse {
-    pub account: Option<String>,
+pub struct RouteResponse {
+    pub route: Option<Swap>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct ListAccountsResponse {
-    pub accounts: Vec<AccountInfo>,
+pub struct ListRouteResponse {
+    pub routes: Vec<RouteInfo>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-pub struct AccountInfo {
-    pub account: String,
-    pub channel_id: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ReflectExecuteMsg {
-    ReflectMsg { msgs: Vec<CosmosMsg> },
+pub struct RouteInfo {
+    pub input: String,
+    pub output: String,
+    pub route: Swap,
 }
